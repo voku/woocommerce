@@ -282,9 +282,11 @@ class WC_Product_Variable extends WC_Product {
 	/**
 	 * Get an array of available variations for the current product.
 	 *
-	 * @return array
+	 * @param bool $return_array_of_data If true, return an array of data for the variation; if false, return a WC_Product_Variation object.
+	 *
+	 * @return array|WC_Product_Variation
 	 */
-	public function get_available_variations() {
+	public function get_available_variations( bool $return_array_of_data = true ) {
 
 		$variation_ids        = $this->get_children();
 		$available_variations = array();
@@ -297,22 +299,35 @@ class WC_Product_Variable extends WC_Product {
 
 			$variation = wc_get_product( $variation_id );
 
-			// Hide out of stock variations if 'Hide out of stock items from the catalog' is checked.
-			if ( ! $variation || ! $variation->exists() || ( 'yes' === get_option( 'woocommerce_hide_out_of_stock_items' ) && ! $variation->is_in_stock() ) ) {
-				continue;
+			if ( $this->variation_is_available( $variation ) ) {
+				$available_variations[] = $return_array_of_data ? $this->get_available_variation( $variation ) : $variation;
 			}
-
-			// Filter 'woocommerce_hide_invisible_variations' to optionally hide invisible variations (disabled variations and variations with empty price).
-			if ( apply_filters( 'woocommerce_hide_invisible_variations', true, $this->get_id(), $variation ) && ! $variation->variation_is_visible() ) {
-				continue;
-			}
-
-			$available_variations[] = $this->get_available_variation( $variation );
 		}
 
 		$available_variations = array_values( array_filter( $available_variations ) );
 
 		return $available_variations;
+	}
+
+	/**
+	 * Check if a given variation is currently available.
+	 *
+	 * @param WC_Product_Variation $variation Variation to check.
+	 *
+	 * @return bool True if the variation is available, false otherwise.
+	 */
+	private function variation_is_available( WC_Product_Variation $variation ) {
+		// Hide out of stock variations if 'Hide out of stock items from the catalog' is checked.
+		if ( ! $variation || ! $variation->exists() || ( 'yes' === get_option( 'woocommerce_hide_out_of_stock_items' ) && ! $variation->is_in_stock() ) ) {
+			return false;
+		}
+
+		// Filter 'woocommerce_hide_invisible_variations' to optionally hide invisible variations (disabled variations and variations with empty price).
+		if ( apply_filters( 'woocommerce_hide_invisible_variations', true, $this->get_id(), $variation ) && ! $variation->variation_is_visible() ) {
+			return false;
+		}
+
+		return true;
 	}
 
 	/**
@@ -582,29 +597,56 @@ class WC_Product_Variable extends WC_Product {
 
 		/**
 		 * If there are attribute filters in the request, a variable product will be visible
-		 * only if at least one of the corresponding variations is visible (for OR filtering)
-		 * or if all of them are (for AND filtering).
-		 *
-		 * Note that for "Any..." variations the attribute value will be empty, these must be
-		 * always included in the result and hence the '' === $value check.
+		 * if at least one of the available variations matches the filters.
 		 */
 
-		$filter_attribute = array_keys( $query_filters )[0];
-		$temp             = array_values( $query_filters )[0];
-		$filter_values    = $temp['terms'];
-		$filter_type      = $temp['query_type'];
+		$attributes_with_terms = array();
+		array_walk(
+			$query_filters,
+			function( $value, $key ) use ( &$attributes_with_terms ) {
+				$attributes_with_terms[ $key ] = $value['terms'];
+			}
+		);
 
-		$attributes = array();
-		foreach ( $this->get_available_variations() as $variation ) {
-			foreach ( $variation['attributes'] as $attribute => $value ) {
-				$attribute = substr( $attribute, strlen( 'attribute_' ) );
-				if ( $attribute === $filter_attribute && ( '' === $value || in_array( $value, $filter_values, true ) ) && ! in_array( $value, $attributes, true ) ) {
-					array_push( $attributes, $value );
-				}
+		$variations = $this->get_available_variations( false );
+		foreach ( $variations as $variation ) {
+			if ( $this->variation_matches_filters( $variation, $attributes_with_terms ) ) {
+				return true;
 			}
 		}
 
-		return ( 'or' === $filter_type && count( $attributes ) > 0 ) || ( count( $attributes ) === count( $filter_values ) );
+		return false;
+	}
+
+	/**
+	 * Checks if a given variation matches the active attribute filters.
+	 *
+	 * @param WC_Product_Variation $variation The variation to check.
+	 * @param array                $query_filters The active filters as an array of attribute_name => [term1, term2...].
+	 *
+	 * @return bool True if the variation matches the active attribute filters.
+	 */
+	private function variation_matches_filters( WC_Product_Variation $variation, array $query_filters ) {
+		// Get the variation attributes as an array of attribute_name => attribute_value.
+		// The array_filter will filter out attributes having a value of '', these correspond
+		// to "Any..." variations that don't participate in filtering.
+		$variation_attributes = array_filter( $variation->get_variation_attributes( false ) );
+
+		$variation_attribute_names_in_filters = array_intersect( array_keys( $query_filters ), array_keys( $variation_attributes ) );
+		if ( empty( $variation_attribute_names_in_filters ) ) {
+			// The variation doesn't have any attribute that participates in filtering so we consider it a match.
+			return true;
+		}
+
+		foreach ( $variation_attribute_names_in_filters as $attribute_name ) {
+			if ( ! in_array( $variation_attributes[ $attribute_name ], $query_filters[ $attribute_name ], true ) ) {
+				// Multiple filters interact with AND logic, so as soon as one of them
+				// doesn't match then the variation doesn't match.
+				return false;
+			}
+		}
+
+		return true;
 	}
 
 	/**
