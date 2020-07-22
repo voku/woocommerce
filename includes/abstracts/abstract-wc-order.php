@@ -1529,7 +1529,7 @@ abstract class WC_Abstract_Order extends WC_Abstract_Legacy_Order {
 	 * @param array  $location_args Location to compute rates for. Should be in form: array( country, state, postcode, city).
 	 * @param object $customer      Only used to maintain backward compatibility for filter `woocommerce-matched_rates`.
 	 *
-	 * @return mixed|void Tax rates.
+	 * @return array Tax rates.
 	 */
 	protected function get_tax_rates( $tax_class, $location_args = array(), $customer = null ) {
 		$tax_location = $this->get_tax_location( $location_args );
